@@ -9,3 +9,6 @@ bin
 .cache-tests
 .cache-main
 metastore_db
+aerospike.log
+aerospike/log
+test.dat

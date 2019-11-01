@@ -1,0 +1,14 @@
+version: '3'
+services:
+  aerospikedb:
+    image: aerospike/aerospike-server:latest
+    ports:  
+    - 3000:3000
+    - 3001:3001
+    volumes:
+    - $PWD/aerospike/etc:/etc/aerospike
+    - $PWD/aerospike/log:/aerospike/log
+    - $PWD/aerospike/data:/aerospike/data
+    environment:
+      NAMESPACE: "aapram"
+      MEM_GB: 24

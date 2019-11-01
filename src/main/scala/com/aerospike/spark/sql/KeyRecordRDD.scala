@@ -10,12 +10,20 @@ import com.aerospike.client.Value
 import com.aerospike.client.query.Statement
 import com.aerospike.helper.query._
 import com.aerospike.helper.query.Qualifier.FilterOperation
-import com.typesafe.scalalogging.slf4j.LazyLogging
+import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.types.ArrayType
 import org.apache.spark.sql.types.MapType
+import org.apache.spark.util.TaskCompletionListener
 
 
 case class AerospikePartition(index: Int, host: String) extends Partition
+
+class PartitionCompletion(kri: KeyRecordIterator, partHost: String) extends TaskCompletionListener with LazyLogging{
+  	def onTaskCompletion(context : TaskContext ) {
+      logger.info(s"KeyRecordIterator closed for Aerospike host $partHost")
+      kri.close()
+    }
+}
 
 /**
   * This is an Aerospike specific RDD to contains the results
@@ -73,10 +81,8 @@ class KeyRecordRDD(
       queryEngine.select(stmt, false, node)
     }
 
-    context.addTaskCompletionListener(context => {
-      logInfo(s"KeyRecordIterator closed for Aerospike host $partHost")
-      kri.close()
-    })
+    context.addTaskCompletionListener(new PartitionCompletion(kri, partHost))
+
     new RowIterator(kri, schema, aerospikeConfig, requiredColumns)
   }
 

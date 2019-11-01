@@ -29,13 +29,13 @@ class QueyEngineTest extends FlatSpec with Matchers {
     client shouldBe a [AerospikeClient]
   }
 
-  it should "Get 3 clients and ensure they are the same" in {
-    val client1 = AerospikeConnection.getClient(config)
-    val client2 = AerospikeConnection.getClient(config)
-    assert(client1 == client2)
-    val client3 = AerospikeConnection.getClient(config)
-    assert(client1 == client3)
-  }
+  // it should "Get 3 clients and ensure they are the same" in {
+  //   val client1 = AerospikeConnection.getClient(config)
+  //   val client2 = AerospikeConnection.getClient(config)
+  //   assert(client1 == client2)
+  //   val client3 = AerospikeConnection.getClient(config)
+  //   assert(client1 == client3)
+  // }
 
   it should "Get a query engine from cache" in {
     val qe = AerospikeConnection.getQueryEngine(config)

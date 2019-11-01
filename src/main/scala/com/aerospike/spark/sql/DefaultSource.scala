@@ -15,7 +15,7 @@ import com.aerospike.client.Value
 import com.aerospike.client.AerospikeException
 import com.aerospike.client.ResultCode
 import com.aerospike.client.policy.GenerationPolicy
-import com.typesafe.scalalogging.slf4j.LazyLogging
+import com.typesafe.scalalogging.LazyLogging
 
 /**
   * This class provides implementations to the Spark load and save functions
@@ -39,116 +39,113 @@ class DefaultSource extends RelationProvider with Serializable with LazyLogging 
 
   def saveDataFrame(data: DataFrame, mode: SaveMode, config: AerospikeConfig){
     val schema = data.schema
-    data.foreachPartition { iterator =>
-      savePartition(iterator, schema, mode, config) }
-  }
+    data.foreachPartition { partition : Iterator[Row] => {
+  
+      val metaFields = Set(
+        config.keyColumn(),
+        config.digestColumn(),
+        config.expiryColumn(),
+        config.generationColumn(),
+        config.ttlColumn()
+      )
 
-  private def savePartition(iterator: Iterator[Row],
-    schema: StructType, mode: SaveMode, config: AerospikeConfig): Unit = {
+      val fieldNames = schema.fields.map { field => field.name}.toSet
+      val binsOnly = fieldNames.diff(metaFields).toSeq.sortWith(_ < _)
 
-    val metaFields = Set(
-      config.keyColumn(),
-      config.digestColumn(),
-      config.expiryColumn(),
-      config.generationColumn(),
-      config.ttlColumn()
-    )
+      val hasUpdateByKey = config.get(AerospikeConfig.UpdateByKey) != null
+      val hasUpdateByDigest = config.get(AerospikeConfig.UpdateByDigest) != null
 
-    val fieldNames = schema.fields.map { field => field.name}.toSet
-    val binsOnly = fieldNames.diff(metaFields).toSeq.sortWith(_ < _)
+      if (hasUpdateByDigest && hasUpdateByKey){
+        sys.error("Cannot use hasUpdateByKey and hasUpdateByDigest configuration together")
+      }
 
-    val hasUpdateByKey = config.get(AerospikeConfig.UpdateByKey) != null
-    val hasUpdateByDigest = config.get(AerospikeConfig.UpdateByDigest) != null
+      logger.debug("fetch client to save partition")
+      val client = AerospikeConnection.getClient(config)
 
-    if(hasUpdateByDigest && hasUpdateByKey){
-      sys.error("Cannot use hasUpdateByKey and hasUpdateByDigest configuration together")
-    }
+      logger.debug("creating write policy")
 
-    logger.debug("fetch client to save partition")
-    val client = AerospikeConnection.getClient(config)
+      val policy = new WritePolicy(client.writePolicyDefault)
 
-    logger.debug("creating write policy")
+      mode match {
+        case SaveMode.ErrorIfExists => policy.recordExistsAction = RecordExistsAction.CREATE_ONLY
+        case SaveMode.Ignore => policy.recordExistsAction = RecordExistsAction.CREATE_ONLY
+        case SaveMode.Overwrite => policy.recordExistsAction = RecordExistsAction.REPLACE
+        case SaveMode.Append => policy.recordExistsAction = RecordExistsAction.UPDATE_ONLY
+      }
 
-    val policy = new WritePolicy(client.writePolicyDefault)
+      val genPol = config.get(AerospikeConfig.generationPolicy)
 
-    mode match {
-      case SaveMode.ErrorIfExists => policy.recordExistsAction = RecordExistsAction.CREATE_ONLY
-      case SaveMode.Ignore => policy.recordExistsAction = RecordExistsAction.CREATE_ONLY
-      case SaveMode.Overwrite => policy.recordExistsAction = RecordExistsAction.REPLACE
-      case SaveMode.Append => policy.recordExistsAction = RecordExistsAction.UPDATE_ONLY
-    }
+      if (genPol != null) {
+        policy.generationPolicy = genPol.asInstanceOf[GenerationPolicy]
+      }
 
-    val genPol = config.get(AerospikeConfig.generationPolicy)
+      var counter = 0
+      partition.foreach { row =>
+      // while (partition.hasNext) {
+      //   val row = partition.next()
 
-    if (genPol != null) {
-      policy.generationPolicy = genPol.asInstanceOf[GenerationPolicy]
-    }
-
-    var counter = 0
-
-    while (iterator.hasNext) {
-      val row = iterator.next()
-
-      val key = if (hasUpdateByDigest) {
-          val digestColumn = config.get(AerospikeConfig.UpdateByDigest).toString
-          val digest = row(schema.fieldIndex(digestColumn)).asInstanceOf[Array[Byte]]
-          new Key(config.namespace(), digest, null, null)
-        } else {
-          val keyColumn = config.get(AerospikeConfig.UpdateByKey).toString
-          val keyObject: Object = row(schema.fieldIndex(keyColumn)).asInstanceOf[Object]
-          new Key(config.namespace(), config.set(), Value.get(keyObject))
-        }
-
-      try {
-        if (policy.generationPolicy == GenerationPolicy.EXPECT_GEN_EQUAL){
-          policy.generation = row(schema.fieldIndex(config.generationColumn())).asInstanceOf[java.lang.Integer].intValue
-        }
-
-        if (schema.fieldNames.contains(config.ttlColumn())){
-          val expIndex = schema.fieldIndex(config.ttlColumn())
-          policy.expiration = row(expIndex).asInstanceOf[java.lang.Integer].intValue
-        }
-
-        val bins = binsOnly.map(binName => TypeConverter.fieldToBin(schema, row, binName))
-        client.put(policy, key, bins:_*)
-        counter += 1
-      } catch {
-        case ex: AerospikeException =>
-          val message = ex.getMessage
-          mode match {
-            case SaveMode.ErrorIfExists =>
-              ex.getResultCode match {
-                case ResultCode.KEY_EXISTS_ERROR =>
-                  logger.debug(s"Key:$key Error:$message")
-                  throw ex
-                case _ =>
-                  logger.error(s"Key:$key Error:$message")
-              }
-
-            case SaveMode.Ignore =>
-              ex.getResultCode match {
-                case ResultCode.KEY_EXISTS_ERROR =>
-                  logger.debug(s"Ignoring existing Key:$key")
-                case _ =>
-                  logger.error(s"Key:$key Error:$message")
-                  throw ex
-              }
-
-            case SaveMode.Overwrite =>
-              logger.error(s"Key:$key Error:$message")
-              //throw ex
-
-            case SaveMode.Append =>
-              ex.getResultCode match {
-                case ResultCode.KEY_NOT_FOUND_ERROR =>
-                  logger.debug(s"Ignoring missing Key:$key")
-                case _ =>
-                  logger.debug(s"Key:$key Error:$message")
-                  throw ex
-              }
+        val key = if (hasUpdateByDigest) {
+            val digestColumn = config.get(AerospikeConfig.UpdateByDigest).toString
+            val digest = row(schema.fieldIndex(digestColumn)).asInstanceOf[Array[Byte]]
+            new Key(config.namespace(), digest, null, null)
+          } else {
+            val keyColumn = config.get(AerospikeConfig.UpdateByKey).toString
+            val keyObject: Object = row(schema.fieldIndex(keyColumn)).asInstanceOf[Object]
+            new Key(config.namespace(), config.set(), Value.get(keyObject))
           }
+
+        try {
+          if (policy.generationPolicy == GenerationPolicy.EXPECT_GEN_EQUAL){
+            policy.generation = row(schema.fieldIndex(config.generationColumn())).asInstanceOf[java.lang.Integer].intValue
+          }
+
+          if (schema.fieldNames.contains(config.ttlColumn())){
+            val expIndex = schema.fieldIndex(config.ttlColumn())
+            policy.expiration = row(expIndex).asInstanceOf[java.lang.Integer].intValue
+          }
+
+          val bins = binsOnly.map(binName => TypeConverter.fieldToBin(schema, row, binName))
+          client.put(policy, key, bins:_*)
+          counter += 1
+        } catch {
+          case ex: AerospikeException =>
+            val message = ex.getMessage
+            mode match {
+              case SaveMode.ErrorIfExists =>
+                ex.getResultCode match {
+                  case ResultCode.KEY_EXISTS_ERROR =>
+                    logger.debug(s"Key:$key Error:$message")
+                    throw ex
+                  case _ =>
+                    logger.error(s"Key:$key Error:$message")
+                }
+
+              case SaveMode.Ignore =>
+                ex.getResultCode match {
+                  case ResultCode.KEY_EXISTS_ERROR =>
+                    logger.debug(s"Ignoring existing Key:$key")
+                  case _ =>
+                    logger.error(s"Key:$key Error:$message")
+                    throw ex
+                }
+
+              case SaveMode.Overwrite =>
+                logger.error(s"Key:$key Error:$message")
+                //throw ex
+
+              case SaveMode.Append =>
+                ex.getResultCode match {
+                  case ResultCode.KEY_NOT_FOUND_ERROR =>
+                    logger.debug(s"Ignoring missing Key:$key")
+                  case _ =>
+                    logger.debug(s"Key:$key Error:$message")
+                    throw ex
+                }
+            }
+          }
+        }
+        logger.debug(s"Completed writing partition of $counter rows")
       }
     }
-    logger.debug(s"Completed writing partition of $counter rows")
   }
 }

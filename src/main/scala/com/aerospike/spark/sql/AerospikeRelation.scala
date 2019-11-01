@@ -12,7 +12,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.types.IntegerType
 import com.aerospike.client.Value
 import com.aerospike.client.query.Statement
-import com.typesafe.scalalogging.slf4j.LazyLogging
+import com.typesafe.scalalogging.LazyLogging
 /**
   * This class infers the schema used by the DataFrame
   * and creates an instance of @see com.aerospike.spark.sql.KeyRecordRDD
